@@ -90,7 +90,7 @@ fn add_button(mut cx: FunctionContext) -> JsResult<JsNull> {
         .unwrap();
     append_child.call(&mut cx, body, vec![button]).unwrap();
 
-    // button.onclick = function (event) {handle_event(event);}
+    // button.onclick = function (event) {handle_event(42, event);}
     let this = cx.null();
     let callback_data = cx.number(42);
     let callback_function = JsFunction::new(&mut cx, handle_event).unwrap();
