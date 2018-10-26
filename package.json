@@ -1,0 +1,16 @@
+{
+  "name": "neon-dom",
+  "version": "0.1.0",
+  "description": "",
+  "main": "lib/main.js",
+  "author": "Jamie Brandon <jamie@scattered-thoughts.net>",
+  "license": "MIT",
+  "dependencies": {
+    "electron": "^3.0.6",
+    "neon-cli": "^0.2.0"
+  },
+  "scripts": {
+    "install": "./compile_native.sh",
+    "start": "ELECTRON_ENABLE_LOGGING=true electron --disable-gpu ."
+  }
+}
