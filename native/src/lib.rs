@@ -31,7 +31,6 @@ fn handle_event(mut cx: FunctionContext) -> JsResult<JsNull> {
         .downcast::<JsNumber>()
         .unwrap()
         .value();
-
     println!("Clicked at {} {}", screen_x, screen_y);
 
     Ok(cx.null())
