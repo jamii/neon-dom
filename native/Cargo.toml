@@ -14,7 +14,10 @@ crate-type = ["dylib"]
 neon-build = "0.2.0"
 
 [dependencies]
+serde = "*"
 neon = "0.2.0"
+# this is a pr that supports neon 0.2.*
+neon-serde = { git = "https://github.com/apendleton/neon-serde.git", branch = "oh-point-two" }
 log = "0.4"
 simple_logger = "1.0.1"
 log-panics = { version = "2.0.0", features = ["with-backtrace"]}

@@ -1,9 +1,134 @@
 #![feature(nll)]
+#![feature(trace_macros)]
+#![feature(specialization)]
 
+extern crate serde;
 #[macro_use]
 extern crate neon;
+#[macro_use]
+extern crate neon_serde;
 
 use neon::prelude::*;
+
+// trace_macros!(true);
+
+trait ToJs {
+    fn to_js<'a>(&self, cx: &mut FunctionContext<'a>) -> Handle<'a, JsValue>
+    where
+        Self: 'a;
+}
+
+impl ToJs for f64 {
+    fn to_js<'a>(&self, cx: &mut FunctionContext<'a>) -> Handle<'a, JsValue>
+    where
+        Self: 'a,
+    {
+        neon_serde::to_value(cx, self).unwrap()
+    }
+}
+
+impl<'b> ToJs for &'b str {
+    fn to_js<'a>(&self, cx: &mut FunctionContext<'a>) -> Handle<'a, JsValue>
+    where
+        Self: 'a,
+    {
+        neon_serde::to_value(cx, self).unwrap()
+    }
+}
+
+impl<'b> ToJs for Handle<'b, JsValue> {
+    fn to_js<'a>(&self, _cx: &mut FunctionContext<'a>) -> Handle<'a, JsValue>
+    where
+        Self: 'a,
+    {
+        self.clone()
+    }
+}
+
+macro_rules! js_ {
+    ( @chain, $cx:expr, $value:expr , ) => {{
+        $value
+    }};
+    ( @chain, $cx:expr, $value:expr , . $key:ident = $( $rest:tt )* ) => {{
+        let value = $value;
+        let rest = js_!($cx, $( $rest )*);
+        value
+            .downcast::<JsObject>()
+            .unwrap()
+            .set($cx, stringify!($key), rest)
+            .unwrap()
+    }};
+    ( @chain, $cx:expr, $value:expr , . $key:ident ( $( $args:expr ),* ) $( $rest:tt )* ) => {{
+        js_!(@chain,
+             $cx,
+             {
+                 let value = $value;
+                 let function = value
+                     .downcast::<JsObject>()
+                     .unwrap()
+                     .get($cx, stringify!($key))
+                     .unwrap();
+                 let mut args = vec![];
+                 {
+                     $( args.push(js_!($cx, $args)); )*
+                 }
+                 function
+                     .downcast::<JsFunction>()
+                     .unwrap()
+                     .call($cx, value, args)
+                     .unwrap()
+             },
+             $( $rest )*)
+    }};
+    ( @chain, $cx:expr, $value:expr , . $key:ident $( $rest:tt )* ) => {{
+        let value = $value;
+        js_!(@chain,
+             $cx,
+             value
+             .downcast::<JsObject>()
+             .unwrap()
+             .get($cx, stringify!($key))
+             .unwrap(),
+             $( $rest )*)
+    }};
+    ( @chain, $cx:expr, $value:expr , ( $( $args:expr ),* ) $( $rest:tt )* ) => {{
+        js_!(@chain,
+             $cx,
+             {
+                 let value = $value;
+                 let mut args = vec![];
+                 {
+                     $( args.push(js_!($cx, $args)); )*
+                 }
+                 let null = ($cx).null();
+                 value
+                     .downcast::<JsFunction>()
+                     .unwrap()
+                     .call($cx, null, args)
+                     .unwrap()
+             },
+             $( $rest )*)
+    }};
+    ( $cx:expr, $value:ident $( $rest:tt )+ ) => {{
+        js_!(@chain,
+             $cx,
+             $value,
+             $( $rest )*)
+    }};
+    ( $cx:expr, null ) => {{
+        ($cx).null()
+    }};
+    ( $cx:expr, $expr:expr ) => {{
+        ($expr).to_js($cx)
+    }}
+}
+
+macro_rules! js {
+    ( $cx:expr, $( $args:tt )* ) => {{
+        let value = js_!( $cx, $( $args )* );
+        neon_serde::from_value($cx, value).unwrap()
+    }};
+}
 
 // this is the easiest way to get backtraces out of electron
 fn init(mut cx: FunctionContext) -> JsResult<JsNull> {
@@ -14,23 +139,12 @@ fn init(mut cx: FunctionContext) -> JsResult<JsNull> {
 
 fn handle_event(mut cx: FunctionContext) -> JsResult<JsNull> {
     assert!(cx.len() == 2);
-
     let data = cx.argument::<JsNumber>(0).unwrap().value();
     println!("Callback data is {}", data);
 
     let event = cx.argument::<JsObject>(1).unwrap();
-    let screen_x = event
-        .get(&mut cx, "screenX")
-        .unwrap()
-        .downcast::<JsNumber>()
-        .unwrap()
-        .value();
-    let screen_y = event
-        .get(&mut cx, "screenY")
-        .unwrap()
-        .downcast::<JsNumber>()
-        .unwrap()
-        .value();
+    let screen_x: f64 = js!(&mut cx, event.screenX);
+    let screen_y: f64 = js!(&mut cx, event.screenY);
 
     println!("Clicked at {} {}", screen_x, screen_y);
 
@@ -39,72 +153,21 @@ fn handle_event(mut cx: FunctionContext) -> JsResult<JsNull> {
 
 fn add_button(mut cx: FunctionContext) -> JsResult<JsNull> {
     assert!(cx.len() == 2);
+    let document = cx.argument::<JsValue>(0).unwrap();
+    let create_closure = cx.argument::<JsValue>(1).unwrap();
 
-    let document = cx.argument::<JsObject>(0).unwrap();
-    let create_callback = cx.argument::<JsFunction>(1).unwrap();
+    let button = js_!(&mut cx, document.createElement("BUTTON"));
+    let button_text = js_!(&mut cx, document.createTextNode("click me"));
+    js_!(&mut cx, button.appendChild(button_text));
+    js_!(&mut cx, document.body.appendChild(button));
 
-    // var button = document.createElement("BUTTON")
-    let create_element = document
-        .get(&mut cx, "createElement")
+    let callback_function = JsFunction::new(&mut cx, handle_event)
         .unwrap()
-        .downcast::<JsFunction>()
-        .unwrap();
-    let button_string = cx.string("BUTTON");
-    let button = create_element
-        .call(&mut cx, document, vec![button_string])
-        .unwrap()
-        .downcast::<JsObject>()
-        .unwrap();
-
-    // var button_text = document.createTextNode("click me")
-    let create_text_node = document
-        .get(&mut cx, "createTextNode")
-        .unwrap()
-        .downcast::<JsFunction>()
-        .unwrap();
-    let click_me_string = cx.string("click me");
-    let button_text = create_text_node
-        .call(&mut cx, document, vec![click_me_string])
-        .unwrap();
-
-    // button.appendChild(button_text)
-    let append_child = button
-        .get(&mut cx, "appendChild")
-        .unwrap()
-        .downcast::<JsFunction>()
-        .unwrap();
-    append_child
-        .call(&mut cx, button, vec![button_text])
-        .unwrap();
-
-    // body.appendChild(button)
-    let body = document
-        .get(&mut cx, "body")
-        .unwrap()
-        .downcast::<JsObject>()
-        .unwrap();
-    let append_child = body
-        .get(&mut cx, "appendChild")
-        .unwrap()
-        .downcast::<JsFunction>()
-        .unwrap();
-    append_child.call(&mut cx, body, vec![button]).unwrap();
-
-    // button.onclick = function (event) {handle_event(42, event);}
-    let this = cx.null();
-    let callback_data = cx.number(42);
-    let callback_function = JsFunction::new(&mut cx, handle_event).unwrap();
-    let callback = create_callback
-        .call(
-            &mut cx,
-            this,
-            vec![
-                callback_function.upcast::<JsValue>(),
-                callback_data.upcast::<JsValue>(),
-            ],
-        )
-        .unwrap();
-    button.set(&mut cx, "onclick", callback).unwrap();
+        .upcast::<JsValue>();
+    js_!(
+        &mut cx,
+        button.onclick = create_closure(callback_function, 42.0)
+    );
 
     Ok(cx.null())
 }
