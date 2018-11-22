@@ -145,7 +145,6 @@ fn handle_event(mut cx: FunctionContext) -> JsResult<JsNull> {
     let event = cx.argument::<JsObject>(1).unwrap();
     let screen_x: f64 = js!(&mut cx, event.screenX);
     let screen_y: f64 = js!(&mut cx, event.screenY);
-
     println!("Clicked at {} {}", screen_x, screen_y);
 
     Ok(cx.null())
