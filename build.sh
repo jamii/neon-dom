@@ -2,7 +2,7 @@
 
 set -e
 
-##This needs to match electron version
+# This needs to match electron version in package.json
 export npm_config_target=3.0.6
 export npm_config_arch=x64
 export npm_config_target_arch=x64
@@ -12,4 +12,4 @@ export npm_config_build_from_source=true
 
 mkdir -p ~/.electron-gyp
 npm config set cache ~/.electron-gyp
-yarn run neon build --release
+yarn run neon build $1

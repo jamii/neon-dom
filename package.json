@@ -10,7 +10,6 @@
     "neon-cli": "^0.2.0"
   },
   "scripts": {
-    "build": "./build.sh",
     "start": "ELECTRON_ENABLE_LOGGING=true electron --disable-gpu ."
   }
 }

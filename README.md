@@ -1,4 +1,4 @@
-`yarn install && yarn build && yarn start`
+`yarn install && ./build.sh --release && yarn start`
 
 A minimal example showing how to manipulate the dom from neon in electron.
 
