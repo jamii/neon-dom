@@ -1,220 +1,277 @@
-#![feature(nll)]
 #![feature(trace_macros)]
-#![feature(specialization)]
+#![feature(nll)]
 
 extern crate serde;
 #[macro_use]
 extern crate serde_derive;
 #[macro_use]
 extern crate neon;
-#[macro_use]
 extern crate neon_serde;
 extern crate rand;
+extern crate rusqlite;
 
 use neon::prelude::*;
 use rand::{Rng, SeedableRng};
+use std::sync::Once;
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread::sleep;
+use std::time::Duration;
 
-// trace_macros!(true);
+#[macro_use]
+mod sugar;
 
-trait ToJs {
-    fn to_js<'a>(&self, cx: &mut FunctionContext<'a>) -> Handle<'a, JsValue>
-    where
-        Self: 'a;
-}
+use sugar::*;
 
-impl ToJs for f64 {
-    fn to_js<'a>(&self, cx: &mut FunctionContext<'a>) -> Handle<'a, JsValue>
-    where
-        Self: 'a,
-    {
-        neon_serde::to_value(cx, self).unwrap()
-    }
-}
+// --- WORKER ---
+// will be run in a background thread
 
-impl ToJs for str {
-    fn to_js<'a>(&self, cx: &mut FunctionContext<'a>) -> Handle<'a, JsValue>
-    where
-        Self: 'a,
-    {
-        neon_serde::to_value(cx, self).unwrap()
-    }
-}
+fn run_query(query: &str) -> String {
+    // let's make the wait noticeable
+    sleep(Duration::from_millis(1000));
 
-impl<'b> ToJs for Handle<'b, JsValue> {
-    fn to_js<'a>(&self, _cx: &mut FunctionContext<'a>) -> Handle<'a, JsValue>
-    where
-        Self: 'a,
-    {
-        self.clone()
-    }
-}
+    let db = rusqlite::Connection::open_with_flags(
+        "./chinook.db",
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+    )
+    .unwrap();
 
-macro_rules! js_ {
-    ( @chain, $cx:expr, $value:expr , ) => {{
-        $value
-    }};
-    ( @chain, $cx:expr, $value:expr , . $key:ident = $( $rest:tt )* ) => {{
-        let value = $value;
-        let rest = js_!($cx, $( $rest )*);
-        value
-            .downcast::<JsObject>()
-            .unwrap()
-            .set($cx, stringify!($key), rest)
-            .unwrap()
-    }};
-    ( @chain, $cx:expr, $value:expr , . $key:ident ( $( $args:expr ),* ) $( $rest:tt )* ) => {{
-        js_!(@chain,
-             $cx,
-             {
-                 let value = $value;
-                 let function = value
-                     .downcast::<JsObject>()
-                     .unwrap()
-                     .get($cx, stringify!($key))
-                     .unwrap();
-                 let mut args = vec![];
-                 {
-                     $( args.push(js_!($cx, $args)); )*
-                 }
-                 function
-                     .downcast::<JsFunction>()
-                     .unwrap()
-                     .call($cx, value, args)
-                     .unwrap()
-             },
-             $( $rest )*)
-    }};
-    ( @chain, $cx:expr, $value:expr , . $key:ident $( $rest:tt )* ) => {{
-        let value = $value;
-        js_!(@chain,
-             $cx,
-             value
-             .downcast::<JsObject>()
-             .unwrap()
-             .get($cx, stringify!($key))
-             .unwrap(),
-             $( $rest )*)
-    }};
-    ( @chain, $cx:expr, $value:expr , ( $( $args:expr ),* ) $( $rest:tt )* ) => {{
-        js_!(@chain,
-             $cx,
-             {
-                 let value = $value;
-                 let mut args = vec![];
-                 {
-                     $( args.push(js_!($cx, $args)); )*
-                 }
-                 let null = ($cx).null();
-                 value
-                     .downcast::<JsFunction>()
-                     .unwrap()
-                     .call($cx, null, args)
-                     .unwrap()
-             },
-             $( $rest )*)
-    }};
-    ( $cx:expr, $value:ident $( $rest:tt )+ ) => {{
-        js_!(@chain,
-             $cx,
-             $value,
-             $( $rest )*)
-    }};
-    // ( $cx:expr, arguments $( $rest:tt )+ ) => {{
-    //     js_!(@chain,
-    //          $cx,
-    //          $value,
-    //          $( $rest )*)
-    // }};
-    ( $cx:expr, null ) => {{
-        ($cx).null()
-    }};
-    ( $cx:expr, $expr:expr ) => {{
-        ($expr).to_js($cx)
-    }}
-}
-
-macro_rules! js {
-    ( $cx:expr, $( $args:tt )* ) => {{
-        let value = js_!( $cx, $( $args )* );
-        neon_serde::from_value($cx, value).unwrap()
-    }};
-}
-
-// this is the easiest way to get backtraces out of electron
-fn init(mut cx: FunctionContext) -> JsResult<JsNull> {
-    simple_logger::init().unwrap();
-    log_panics::init();
-    Ok(cx.null())
-}
-
-fn handle_event(mut cx: FunctionContext) -> JsResult<JsNull> {
-    assert!(cx.len() == 2);
-    let data = cx.argument::<JsNumber>(0).unwrap().value();
-    println!("Callback data is {}", data);
-
-    let event = cx.argument::<JsObject>(1).unwrap();
-    let screen_x: f64 = js!(&mut cx, event.screenX);
-    let screen_y: f64 = js!(&mut cx, event.screenY);
-    println!("Clicked at {} {}", screen_x, screen_y);
-
-    Ok(cx.null())
-}
-
-fn add_button(mut cx: FunctionContext) -> JsResult<JsNull> {
-    assert!(cx.len() == 2);
-    let document = cx.argument::<JsValue>(0).unwrap();
-    let create_closure = cx.argument::<JsValue>(1).unwrap();
-
-    let button = js_!(&mut cx, document.createElement("BUTTON"));
-    let button_text = js_!(&mut cx, document.createTextNode("click me"));
-    js_!(&mut cx, button.appendChild(button_text));
-    js_!(&mut cx, document.body.appendChild(button));
-
-    let callback_function = JsFunction::new(&mut cx, handle_event)
+    let mut statement = db.prepare(&*query).unwrap();
+    let rows = statement
+        .query_map(rusqlite::NO_PARAMS, |row| {
+            (0..row.column_count())
+                .into_iter()
+                .map(|i| row.get::<usize, String>(i))
+                .collect::<Vec<_>>()
+                .join("\t")
+        })
         .unwrap()
-        .upcast::<JsValue>();
-    js_!(
-        &mut cx,
-        button.onclick = create_closure(callback_function, 42.0)
-    );
-
-    Ok(cx.null())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    rows.join("\n")
 }
 
-fn all_the_buttons(mut cx: FunctionContext) -> JsResult<JsNull> {
-    assert!(cx.len() == 2);
-    let document = cx.argument::<JsValue>(0).unwrap();
-    let create_closure = cx.argument::<JsValue>(1).unwrap();
+// --- MODEL ---
+// state, event handling and rendering
 
-    for _ in 0..1_00 {
-        let button = js_!(&mut cx, document.createElement("BUTTON"));
-        let button_text = js_!(&mut cx, document.createTextNode("click me"));
-        js_!(&mut cx, button.appendChild(button_text));
-        js_!(&mut cx, document.body.appendChild(button));
+type Id = usize;
 
-        // let callback_function = JsFunction::new(&mut cx, handle_event)
-        //     .unwrap()
-        //     .upcast::<JsValue>();
-        // js_!(
-        //     &mut cx,
-        //     button.onclick = create_closure(callback_function, 42.0)
-        // );
+enum Answer {
+    Pending,
+    Answered(String),
+}
+
+struct Model {
+    query: String,
+    next_id: Id,
+    answers: Vec<(Id, Answer)>,
+}
+
+#[derive(Serialize, Deserialize)]
+enum Event {
+    RunQuery,
+}
+
+impl Model {
+    fn new() -> Self {
+        Model {
+            query: "".to_owned(),
+            next_id: 0,
+            answers: vec![],
+        }
     }
 
-    Ok(cx.null())
-}
-
-fn all_the_arrays(mut cx: FunctionContext) -> JsResult<JsArray> {
-    let outer = cx.empty_array();
-
-    for _ in 0..1_000_000 {
-        let inner = cx.empty_array();
-        let len = outer.len();
-        outer.set(&mut cx, len, inner)?;
+    fn handle_event<SW>(&mut self, event: Event, spawn_worker: SW)
+    where
+        SW: Fn(Box<dyn FnMut(&mut Model)>),
+    {
+        match event {
+            Event::RunQuery => {
+                let id = self.next_id;
+                self.next_id += 1;
+                let query = ::std::mem::replace(&mut self.query, "".to_owned());
+                self.answers.push((id, Answer::Pending));
+                spawn_worker(Box::new(move |model| {
+                    let answer = run_query(&*query);
+                    for (id2, answer2) in model.answers.iter_mut() {
+                        if id == *id2 {
+                            *answer2 = Answer::Answered(answer);
+                        }
+                        break;
+                    }
+                }));
+            }
+        }
     }
 
-    Ok(outer)
+    fn render<'a, CX>(
+        &self,
+        cx: &mut CX,
+        document: Handle<JsValue>,
+        create_closure: Handle<JsValue>,
+    ) where
+        CX: Context<'a>,
+    {
+        js!(cx, document.body.innerHTML = "");
+
+        let wrapper = js!(cx, document.createElement("div"));
+        js!(cx, document.body.appendChild(&wrapper));
+
+        let hello = js!(cx, document.createTextNode("hello"));
+        js!(cx, wrapper.appendChild(&hello));
+    }
 }
+
+// --- APP ---
+// coordinates model updates and rendering
+// may even be correct
+
+pub struct App {
+    model: Mutex<Model>,
+    needs_render: (Mutex<bool>, Condvar),
+}
+
+impl App {
+    fn new() -> Self {
+        App {
+            model: Mutex::new(Model::new()),
+            needs_render: (Mutex::new(true), Condvar::new()),
+        }
+    }
+
+    fn handle_event(&self, event: Event) {
+        let mut model_guard = self.model.lock().unwrap();
+        model_guard.handle_event(event, |mut worker: Box<dyn FnMut(&mut Model)>| {
+            let mut model_guard = self.model.lock().unwrap();
+            worker(&mut *model_guard);
+            self.set_needs_render();
+            drop(model_guard);
+        });
+        self.set_needs_render();
+        drop(model_guard);
+    }
+
+    fn set_needs_render(&self) {
+        let (mutex, condvar) = &self.needs_render;
+        let mut guard = mutex.lock().unwrap();
+        *guard = true;
+        condvar.notify_all();
+        drop(guard);
+    }
+
+    fn wait_until_needs_render(&self) {
+        let (mutex, condvar) = &self.needs_render;
+        let mut guard = mutex.lock().unwrap();
+        while !*guard {
+            guard = condvar.wait(guard).unwrap();
+        }
+        drop(guard);
+    }
+
+    fn render<'a, CX>(
+        &self,
+        cx: &mut CX,
+        document: Handle<JsValue>,
+        create_closure: Handle<JsValue>,
+    ) where
+        CX: Context<'a>,
+    {
+        let model_guard = self.model.lock().unwrap();
+        model_guard.render(cx, document, create_closure);
+        self.set_needs_render();
+        drop(model_guard);
+    }
+}
+
+// --- ELECTRON BOILERPLATE ---
+
+struct OnNeedsRender {
+    app: Arc<App>,
+}
+
+impl neon::task::Task for OnNeedsRender {
+    type Output = ();
+    type Error = ();
+    type JsEvent = JsNull;
+
+    fn perform(&self) -> Result<Self::Output, Self::Error> {
+        self.app.wait_until_needs_render();
+        Ok(())
+    }
+
+    fn complete<'a>(
+        self,
+        mut cx: TaskContext<'a>,
+        result: Result<Self::Output, Self::Error>,
+    ) -> JsResult<Self::JsEvent> {
+        result.unwrap();
+        Ok(cx.null())
+    }
+}
+
+// the declare_types macro doesn't like Arc<App>
+type ArcApp = Arc<App>;
+
+declare_types! {
+
+    pub class JsApp for ArcApp {
+        init(mut _cx) {
+            Ok(Arc::new(App::new()))
+        }
+
+        method handle_event(mut cx) {
+            assert!(cx.len() == 1);
+            // TODO
+
+            let this = cx.this();
+            let app: Arc<App> = {
+                let guard = cx.lock();
+                let borrow = this.borrow(&guard);
+                borrow.clone()
+            };
+
+            // TODO
+
+            Ok(cx.null().upcast())
+        }
+
+        method on_needs_render(mut cx) {
+            assert!(cx.len() == 1);
+            let callback = cx.argument::<JsFunction>(0).unwrap();
+
+            let this = cx.this();
+            let app: Arc<App> = {
+                let guard = cx.lock();
+                let borrow = this.borrow(&guard);
+                borrow.clone()
+            };
+
+            OnNeedsRender {
+                app: app
+            }.schedule(callback);
+
+            Ok(cx.null().upcast())
+        }
+
+        method render(mut cx) {
+            assert!(cx.len() == 2);
+            let document = cx.argument::<JsValue>(0).unwrap();
+            let create_closure = cx.argument::<JsValue>(1).unwrap();
+
+            let this = cx.this();
+            let app: Arc<App> = {
+                let guard = cx.lock();
+                let borrow = this.borrow(&guard);
+                borrow.clone()
+            };
+
+            app.render(&mut cx, document, create_closure);
+
+            Ok(cx.null().upcast())
+        }
+    }
+}
+
+// --- MICROBENCHMARKS ---
 
 #[derive(Serialize)]
 enum Node {
@@ -241,12 +298,12 @@ fn make_node<'a>(
     node: &Node,
 ) -> Handle<'a, JsValue> {
     match node {
-        Node::Text(text) => js_!(cx, document.createTextNode(text)),
+        Node::Text(text) => js!(cx, document.createTextNode(text)),
         Node::Div(nodes) => {
-            let parent_element = js_!(cx, document.createElement("div"));
+            let parent_element = js!(cx, document.createElement("div"));
             for child_node in nodes.iter() {
                 let child_element = make_node(cx, document, child_node);
-                js_!(cx, parent_element.appendChild(child_element));
+                js!(cx, parent_element.appendChild(child_element));
             }
             parent_element
         }
@@ -261,16 +318,24 @@ fn put_the_node(mut cx: FunctionContext) -> JsResult<JsNull> {
     assert!(cx.len() == 1);
     let document = cx.argument::<JsValue>(0).unwrap();
     let node_element = make_node(&mut cx, document, &random_node());
-    js_!(&mut cx, document.body.appendChild(node_element));
+    js!(&mut cx, document.body.appendChild(node_element));
     Ok(cx.null())
 }
 
+// --- EXPORTED TO ELECTRON ---
+
+static INIT: Once = Once::new();
+
 register_module!(mut cx, {
-    cx.export_function("init", init)?;
-    cx.export_function("add_button", add_button)?;
-    cx.export_function("all_the_buttons", all_the_buttons)?;
-    cx.export_function("all_the_arrays", all_the_arrays)?;
+    INIT.call_once(|| {
+        // this is the easiest way to get backtraces out of electron
+        simple_logger::init().unwrap();
+        log_panics::init();
+    });
+
+    cx.export_class::<JsApp>("App")?;
     cx.export_function("get_the_node", get_the_node)?;
     cx.export_function("put_the_node", put_the_node)?;
+
     Ok(())
 });
