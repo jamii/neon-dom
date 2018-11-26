@@ -46,6 +46,9 @@ fn run_query(query: &str) -> Result<String, rusqlite::Error> {
                 .join("\t")
         })?
         .collect::<Result<Vec<_>, _>>()?;
+
+    debug!("Ran query {:?}", query);
+
     Ok(rows.join("\n"))
 }
 
@@ -60,20 +63,19 @@ enum Answer {
 }
 
 struct Model {
-    query: String,
     next_id: Id,
     answers: Vec<(Id, Answer)>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 enum Event {
-    RunQuery,
+    QueryKeyDown,
+    DeleteAnswer(Id),
 }
 
 impl Model {
     fn new() -> Self {
         Model {
-            query: "".to_owned(),
             next_id: 0,
             answers: vec![],
         }
@@ -91,22 +93,30 @@ impl Model {
     {
         debug!("Handling {:?}", event);
         match event {
-            Event::RunQuery => {
-                let id = self.next_id;
-                self.next_id += 1;
-                let query = ::std::mem::replace(&mut self.query, "".to_owned());
-                self.answers.push((id, Answer::Pending));
-                spawn_worker(Box::new(move |model_mutex| {
-                    let answer =
-                        run_query(&*query).unwrap_or_else(|error| format!("Error: {}", error));
-                    let mut model_guard = model_mutex.lock().unwrap();
-                    for (id2, answer2) in model_guard.answers.iter_mut() {
-                        if id == *id2 {
-                            *answer2 = Answer::Answered(answer);
+            Event::QueryKeyDown => {
+                let keycode: String = js_!(cx, dom_event.key);
+                if &*keycode == "Enter" {
+                    js!(cx, dom_event.preventDefault());
+                    let id = self.next_id;
+                    self.next_id += 1;
+                    let query: String = js_!(cx, dom_event.target.value);
+                    self.answers.push((id, Answer::Pending));
+                    debug!("Running query {:?}", query);
+                    spawn_worker(Box::new(move |model_mutex| {
+                        let answer =
+                            run_query(&*query).unwrap_or_else(|error| format!("Error: {}", error));
+                        let mut model_guard = model_mutex.lock().unwrap();
+                        for (id2, answer2) in model_guard.answers.iter_mut() {
+                            if id == *id2 {
+                                *answer2 = Answer::Answered(answer);
+                                break;
+                            }
                         }
-                        break;
-                    }
-                }));
+                    }));
+                }
+            }
+            Event::DeleteAnswer(id) => {
+                self.answers.retain(|(id2, _)| *id2 != id);
             }
         }
     }
@@ -121,17 +131,44 @@ impl Model {
     {
         debug!("Rendering");
 
-        js!(cx, document.body.innerHTML = "");
+        // no nice framework here yet, so we'll just do our diff/update by hand
 
-        let wrapper = js!(cx, document.createElement("div"));
-        js!(cx, document.body.appendChild(&wrapper));
+        let mut answers_div = js!(cx, document.getElementById("answers_div"));
+        if answers_div.is_a::<JsNull>() {
+            let top = js!(cx, document.createElement("div"));
+            js!(cx, document.body.appendChild(&top));
 
-        let hello = js!(cx, document.createTextNode("hello"));
-        js!(cx, wrapper.appendChild(&hello));
-        let event = neon_serde::to_value(cx, &Event::RunQuery).unwrap();
+            let query_box = js!(cx, document.createElement("textarea"));
+            js!(cx, query_box.innerText = "select name from tracks limit 3");
+            let keydown_event = neon_serde::to_value(cx, &Event::QueryKeyDown).unwrap();
+            let keydown_handler = js!(cx, create_handler(keydown_event));
+            js!(cx, query_box.onkeydown = keydown_handler);
+            js!(cx, top.appendChild(&query_box));
 
-        let handler = js!(cx, create_handler(event));
-        js!(cx, wrapper.onclick = handler);
+            answers_div = js!(cx, document.createElement("div"));
+            js!(cx, answers_div.id = "answers_div");
+            js!(cx, top.appendChild(&answers_div));
+        }
+
+        js!(cx, answers_div.innerHTML = "");
+
+        for (id, answer) in &self.answers {
+            let answer_div = js!(cx, document.createElement("div"));
+            js!(cx, answers_div.appendChild(&answer_div));
+
+            let answer_text = match answer {
+                Answer::Pending => "...",
+                Answer::Answered(text) => text,
+            };
+            js!(cx, answer_div.innerText = answer_text);
+
+            let answer_delete_button = js!(cx, document.createElement("button"));
+            js!(cx, answer_delete_button.innerText = "x");
+            let click_event = neon_serde::to_value(cx, &Event::DeleteAnswer(id.clone())).unwrap();
+            let click_handler = js!(cx, create_handler(click_event));
+            js!(cx, answer_delete_button.onclick = click_handler);
+            js!(cx, answer_div.appendChild(answer_delete_button));
+        }
     }
 }
 

@@ -62,7 +62,7 @@ macro_rules! js {
                      .unwrap()
                      .get($cx, stringify!($key))
                      .unwrap();
-                 let mut args = vec![];
+                 let mut args: Vec<Handle<JsValue>> = vec![];
                  {
                      $( args.push(js!($cx, $args)); )*
                  }
