@@ -351,7 +351,7 @@ enum Node {
 fn random_node() -> Node {
     let mut rng = rand::StdRng::from_seed(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
     let mut nodes = vec![];
-    for _ in 0..1_000_0 {
+    for _ in 0..1_000 {
         if rng.gen() {
             nodes.push(Node::Text(rng.gen::<usize>().to_string()))
         } else {
@@ -379,6 +379,13 @@ fn make_node<'a>(
     }
 }
 
+fn make_the_node(mut cx: FunctionContext) -> JsResult<JsNull> {
+    match random_node() {
+        Node::Div(_) => Ok(cx.null()),
+        _ => panic!(),
+    }
+}
+
 fn get_the_node(mut cx: FunctionContext) -> JsResult<JsValue> {
     Ok(neon_serde::to_value(&mut cx, &random_node()).unwrap())
 }
@@ -403,6 +410,7 @@ register_module!(mut cx, {
     });
 
     cx.export_class::<JsApp>("App")?;
+    cx.export_function("make_the_node", make_the_node)?;
     cx.export_function("get_the_node", get_the_node)?;
     cx.export_function("put_the_node", put_the_node)?;
 
